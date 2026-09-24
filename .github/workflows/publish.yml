@@ -1,0 +1,139 @@
+name: Publish
+
+# On a v* tag: build the sdist and the (pure-Python, py3-none-any) wheel, publish them to PyPI, and
+# draft a GitHub release carrying them plus mpwasm-pythonista.zip, the ready-to-copy package folder
+# for Pythonista (with the MicroPython .mjs / .wasm files inside).
+#
+# workflow_dispatch builds (and optionally publishes to TestPyPI) without a tag.
+#
+# PyPI publishing uses trusted publishing: the `pypi` / `testpypi` environments must exist in this repo,
+# and the project on PyPI must list this repo + workflow (publish.yml) as a trusted publisher.
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      testpypi:
+        description: "Publish to TestPyPI"
+        required: false
+        type: boolean
+        default: false
+      version:
+        description: "Override version (e.g. 0.1.0rc1); TestPyPI needs one without a dev/local suffix"
+        required: false
+        type: string
+        default: ""
+
+run-name: >
+  Publish → ${{ github.event_name == 'push' && 'PyPI' ||
+      inputs.testpypi && 'TestPyPI' || 'build only' }}
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build sdist + wheel
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0 # setuptools_scm needs tags
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4
+
+      - name: Build (the wheel is built from the sdist, so this proves the sdist builds on its own)
+        env:
+          SETUPTOOLS_SCM_PRETEND_VERSION: ${{ inputs.version }}
+          # PyPI/TestPyPI reject local version segments (+g<hash>); keep them on build-only runs.
+          SETUPTOOLS_SCM_OVERRIDES_FOR_MPWASM: >-
+            ${{ (github.event_name == 'push' || inputs.testpypi) && '{local_scheme = "no-local-version"}' || '' }}
+        run: uv build --out-dir dist
+
+      - name: Smoke-test the wheel in a clean environment
+        run: |
+          uv venv -q /tmp/smoke
+          uv pip install -q --python /tmp/smoke dist/*.whl
+          cd /tmp && MPWASM_HOST=node /tmp/smoke/bin/python -c "
+          import mpwasm
+          with mpwasm.MicroPython() as mp:
+              assert mp.run('print(6 * 7)') == '42'
+              print(mp.host, mp.run('import sys; print(sys.version)'))
+          "
+
+      - name: Release extras (Pythonista zip)
+        run: |
+          mkdir -p extras
+          python3 - <<'PY'
+          import glob, zipfile
+          wheel = zipfile.ZipFile(glob.glob("dist/*.whl")[0])
+          with zipfile.ZipFile("extras/mpwasm-pythonista.zip", "w", zipfile.ZIP_DEFLATED) as z:
+              for name in wheel.namelist():
+                  if name.startswith("mpwasm/"):
+                      z.writestr(name, wheel.read(name))
+              z.write("examples/basic.py", "basic.py")
+          PY
+          ls -l dist extras
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: dist
+          path: dist
+          retention-days: 14
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: extras
+          path: extras
+          retention-days: 14
+
+  publish:
+    needs: build
+    if: github.event_name == 'push' || inputs.testpypi
+    runs-on: ubuntu-latest
+    environment: ${{ github.event_name == 'push' && 'pypi' || 'testpypi' }}
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: dist
+          path: dist
+
+      - name: Publish to PyPI
+        if: github.event_name == 'push'
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          skip-existing: true
+
+      - name: Publish to TestPyPI
+        if: github.event_name == 'workflow_dispatch'
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          skip-existing: true
+          repository-url: https://test.pypi.org/legacy/
+
+  release:
+    needs: build
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          path: artifacts
+
+      - name: Create GitHub release (draft)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ github.ref_name }}" \
+            --repo "${{ github.repository }}" \
+            --title "mpwasm ${{ github.ref_name }}" \
+            --generate-notes \
+            --draft \
+            artifacts/dist/* artifacts/extras/*

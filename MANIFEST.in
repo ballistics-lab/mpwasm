@@ -1,0 +1,7 @@
+# The sdist carries the sources and build hooks only; the MicroPython assets are downloaded (and
+# checksum-verified) by build_assets.py when it is built.
+include build_assets.py setup.py README.md package.json package-lock.json
+graft src
+graft tests
+graft examples
+global-exclude *.mjs *.wasm .npm-integrity _version.py __pycache__ *.py[cod]

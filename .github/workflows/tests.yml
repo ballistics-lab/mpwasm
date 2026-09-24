@@ -1,0 +1,156 @@
+name: Tests
+
+# Builds the package from source (which downloads the checksum-verified MicroPython build from npm) and
+# runs the suite once per JavaScript runtime, selected with pytest's --js-runtime (see tests/conftest.py;
+# a runtime that can't start fails the step, it is never skipped):
+#
+#   test:     every OS x CPython oldest/newest (also free-threaded 3.14t) + PyPy, on Node (available on every runner).
+#   jsc:      WebKitGTK's JavaScriptCore -- the engine behind Pythonista's JSContext -- with its JIT and
+#             without it (iOS apps like Pythonista run it without), as the stand-in for an iOS device.
+#   coverage: combines the Ubuntu runs of all the runtimes and uploads the result to Codecov.
+
+on:
+  push:
+    paths-ignore: &non-code-paths
+      - "**.md"
+      - "LICENSE"
+  pull_request:
+    paths-ignore: *non-code-paths
+  workflow_dispatch:
+
+concurrency:
+  group: tests-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: ${{ matrix.os }} / ${{ matrix.python-version }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        python-version: ["3.10", "3.14", "3.14t", "pypy3.11"]
+    defaults:
+      run:
+        shell: bash
+    env:
+      # Coverage only from Ubuntu: one path layout to combine; the other legs still verify behaviour.
+      COV_ARGS: ${{ matrix.os == 'ubuntu-latest' && '--cov --cov-report=' || '' }}
+      COV_ID: ${{ matrix.os }}-${{ matrix.python-version }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0 # setuptools_scm needs tags for the package version
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Build and install (downloads the MicroPython build)
+        run: uv sync --locked
+
+      - name: pytest --js-runtime node
+        run: uv run --locked pytest -v --js-runtime node $COV_ARGS
+        env:
+          COVERAGE_FILE: .coverage.${{ env.COV_ID }}-node
+
+      - name: Example (an empty line on stdin exits its REPL)
+        run: echo "" | uv run --locked python examples/basic.py
+
+      - name: Upload coverage data
+        if: ${{ matrix.os == 'ubuntu-latest' && !cancelled() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage-data-${{ env.COV_ID }}
+          path: .coverage.*
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 3
+
+  jsc:
+    name: WebKitGTK JavaScriptCore
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Install JavaScriptCore + PyGObject
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q gir1.2-javascriptcoregtk-4.1 python3-gi
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4
+
+      # python3-gi is built for the distribution's own Python, so use that interpreter with its
+      # site-packages visible.
+      - name: Build and install into a system-site-packages venv
+        run: |
+          uv venv --system-site-packages --python /usr/bin/python3 .venv
+          uv pip install -e . pytest pytest-cov
+
+      - name: pytest --js-runtime gi-jsc (JIT on)
+        run: .venv/bin/python -m pytest -v --js-runtime gi-jsc --cov --cov-report=
+        env:
+          JSC_useJIT: "true"
+          COVERAGE_FILE: .coverage.jsc-jit
+
+      - name: pytest --js-runtime gi-jsc (JIT off, as on iOS)
+        if: ${{ !cancelled() }}
+        run: .venv/bin/python -m pytest -v --js-runtime gi-jsc --cov --cov-report=
+        env:
+          JSC_useJIT: "false"
+          COVERAGE_FILE: .coverage.jsc-nojit
+
+      - name: Example
+        run: echo "" | MPWASM_HOST=gi-jsc .venv/bin/python examples/basic.py
+
+      - name: Upload coverage data
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage-data-jsc
+          path: .coverage.*
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 3
+
+  coverage:
+    name: Combine coverage + Codecov
+    needs: [test, jsc]
+    if: ${{ !cancelled() && github.actor != 'dependabot[bot]' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # Codecov OIDC upload, no token secret needed
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4
+
+      - name: Download coverage data
+        uses: actions/download-artifact@v8
+        with:
+          pattern: coverage-data-*
+          merge-multiple: true
+
+      - name: Combine coverage
+        run: |
+          uvx coverage combine
+          uvx coverage report
+          uvx coverage xml
+          uvx coverage report --format=markdown >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload to Codecov
+        uses: codecov/codecov-action@v7
+        with:
+          use_oidc: true
+          files: ./coverage.xml
+          fail_ci_if_error: true

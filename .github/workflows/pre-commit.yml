@@ -1,0 +1,84 @@
+name: Pre-commit
+
+# Same flow as py-ballisticcalc's: run every hook; on a pull request from this repo, commit what the
+# auto-fixing hooks (ruff) changed and verify again; anywhere else, changed files are a failure.
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+  workflow_call:
+
+concurrency:
+  group: pre-commit-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+jobs:
+  pre-commit:
+    name: pre-commit run --all-files
+    runs-on: ubuntu-latest
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0 # setuptools_scm needs tags for the package version
+          ref: ${{ github.head_ref || github.ref_name }}
+          # no submodules: the uv-sync hook downloads the MicroPython build from npm
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4
+        with:
+          python-version: "3.11"
+
+      - name: Install pre-commit
+        run: uv tool install pre-commit
+
+      - name: Run pre-commit
+        id: first_run
+        continue-on-error: true
+        run: pre-commit run --all-files --show-diff-on-failure
+
+      - name: Check for changes
+        id: diff
+        run: |
+          if [ -n "$(git status --porcelain)" ]; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Fail (no auto-fixable changes, but hooks failed)
+        if: steps.diff.outputs.changed == 'false' && steps.first_run.outcome == 'failure'
+        run: exit 1
+
+      - name: Fail (changes produced, but not on a pull_request)
+        if: steps.diff.outputs.changed == 'true' && github.event_name != 'pull_request'
+        run: |
+          echo "pre-commit modified files, but auto-commit only runs on pull_request events."
+          git status --porcelain
+          exit 1
+
+      - name: Re-run pre-commit after auto-fixes
+        id: verify_run
+        if: steps.diff.outputs.changed == 'true' && github.event_name == 'pull_request'
+        continue-on-error: true
+        run: pre-commit run --all-files --show-diff-on-failure
+
+      - name: Fail (issues remain after auto-fix)
+        if: steps.diff.outputs.changed == 'true' && github.event_name == 'pull_request' && steps.verify_run.outcome == 'failure'
+        run: exit 1
+
+      - name: Commit and push auto-fixes
+        if: steps.diff.outputs.changed == 'true' && github.event_name == 'pull_request' && steps.verify_run.outcome == 'success'
+        env:
+          # through the environment, not inlined: a branch name is attacker-controlled text
+          BRANCH: ${{ github.head_ref || github.ref_name }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "style: auto-fix via pre-commit"
+          git push origin "HEAD:$BRANCH"

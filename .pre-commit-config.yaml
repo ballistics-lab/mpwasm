@@ -1,0 +1,55 @@
+default_install_hook_types: [pre-commit]
+default_language_version:
+  python: python3
+
+repos:
+  - repo: local
+    hooks:
+      - id: uv-lock
+        name: uv lock check
+        entry: uv
+        # --check only, not --upgrade: dependency bumps are Dependabot's job.
+        args: ["lock", "--check"]
+        language: system
+        pass_filenames: false
+        files: '^(pyproject\.toml|uv\.lock)$'
+
+      - id: uv-sync
+        name: uv sync before hooks
+        entry: uv
+        # Rebuilds the editable install (and re-fetches the assets) when the build hooks changed.
+        args: ["sync"]
+        language: system
+        pass_filenames: false
+
+      - id: uv-pyright
+        name: pyright
+        entry: uv
+        args: ["run", "pyright"]
+        language: system
+        pass_filenames: false
+        files: '\.pyi?$'
+
+      - id: uv-ruff-check
+        name: ruff lint & fix
+        entry: uv
+        args: ["run", "ruff", "check", "--fix"]
+        language: system
+        pass_filenames: false
+        files: '\.pyi?$'
+
+      - id: uv-ruff-format
+        name: ruff format
+        entry: uv
+        args: ["run", "ruff", "format"]
+        language: system
+        pass_filenames: false
+        files: '\.pyi?$'
+
+      - id: uv-pytest
+        name: pytest
+        entry: uv
+        args: ["run", "pytest", "-q"]
+        language: system
+        pass_filenames: false
+        files: '(\.py|pyproject\.toml)$'

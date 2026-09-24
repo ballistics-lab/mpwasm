@@ -1,0 +1,84 @@
+[build-system]
+# Nothing is compiled: build_assets.py downloads the pinned MicroPython npm package (checksum-verified)
+# into the package on every build, so a plain `pip install` / `uv build` needs nothing preinstalled.
+requires = ["setuptools>=77", "setuptools_scm>=8"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mpwasm"
+dynamic = ["version"]
+description = "MicroPython (WebAssembly build) for CPython, PyPy and Pythonista, run in JavaScriptCore or Node"
+readme = "README.md"
+authors = [{ name = "o-murphy", email = "thehelixpg@gmail.com" }]
+# 3.10 is what Pythonista runs.
+requires-python = ">=3.10"
+dependencies = []
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+packages = ["mpwasm"]
+include-package-data = false
+
+[tool.setuptools.package-data]
+mpwasm = ["*.mjs", "*.wasm", "py.typed"]
+
+[tool.setuptools_scm]
+# Until the repo has a tag (or any commit), there is nothing to derive a version from.
+fallback_version = "0.0.0"
+# `--version` reports it; a file, so it works without the distribution's name or its metadata.
+version_file = "src/mpwasm/_version.py"
+
+[project.scripts]
+mpwasm = "mpwasm._cli:main"
+
+[tool.uv]
+# Rebuild the editable install (and so re-fetch the assets) when the build hooks change.
+cache-keys = [
+    { file = "pyproject.toml" },
+    { file = "setup.py" },
+    { file = "build_assets.py" },
+    { file = "package.json" },
+    { file = "package-lock.json" },  # which MicroPython build is bundled: Dependabot's npm bumps change it
+    { git = { commit = true } },
+]
+
+[dependency-groups]
+dev = [
+    "pre-commit>=4.6.2",
+    "pyright>=1.1.414",
+    "pytest>=9.1.1",
+    "pytest-cov>=7.1.0",
+    "ruff>=0.16.8",
+    "setuptools>=84.0.0",
+    "setuptools-scm>=10.2.3",
+]
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+addopts = "-rf"
+testpaths = ["tests"]
+
+[tool.coverage.run]
+source = ["mpwasm"]
+relative_files = true
+
+[tool.coverage.report]
+show_missing = true
+
+[tool.pyright]
+include = ["src", "tests", "examples", "build_assets.py", "setup.py"]
+strict = ["src"]
+
+[tool.ruff]
+include = [
+    "pyproject.toml",
+    "src/**/*.py",
+    "build_assets.py",
+    "setup.py",
+    "tests/**/*.py",
+    "examples/**/*.py",
+]
+line-length = 120
+
+[tool.ruff.lint]
+ignore = ["F403", "F405"]

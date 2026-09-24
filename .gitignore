@@ -1,0 +1,21 @@
+**/__pycache__
+**/.ruff_cache/
+**/.pytest_cache/
+**/.idea
+**/*.egg-info
+**/.venv
+**/build
+**/dist
+.vscode
+
+# build_assets.py output (downloaded from npm on every build, shipped inside the wheel)
+src/mpwasm/*.mjs
+src/mpwasm/*.wasm
+src/mpwasm/.npm-integrity
+src/mpwasm/_version.py
+# coverage
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+node_modules/
