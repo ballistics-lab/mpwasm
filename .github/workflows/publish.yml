@@ -1,8 +1,7 @@
 name: Publish
 
 # On a v* tag: build the sdist and the (pure-Python, py3-none-any) wheel, publish them to PyPI, and
-# draft a GitHub release carrying them plus mpwasm-pythonista.zip, the ready-to-copy package folder
-# for Pythonista (with the MicroPython .mjs / .wasm files inside).
+# draft a GitHub release carrying them. (Pythonista and PythonIDE install the same wheel as everywhere else.)
 #
 # workflow_dispatch builds (and optionally publishes to TestPyPI) without a tag.
 #
@@ -43,7 +42,7 @@ jobs:
           fetch-depth: 0 # setuptools_scm needs tags
 
       - name: Install uv
-        uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7
 
       - name: Build (the wheel is built from the sdist, so this proves the sdist builds on its own)
         env:
@@ -64,30 +63,10 @@ jobs:
               print(mp.host, mp.run('import sys; print(sys.version)'))
           "
 
-      - name: Release extras (Pythonista zip)
-        run: |
-          mkdir -p extras
-          python3 - <<'PY'
-          import glob, zipfile
-          wheel = zipfile.ZipFile(glob.glob("dist/*.whl")[0])
-          with zipfile.ZipFile("extras/mpwasm-pythonista.zip", "w", zipfile.ZIP_DEFLATED) as z:
-              for name in wheel.namelist():
-                  if name.startswith("mpwasm/"):
-                      z.writestr(name, wheel.read(name))
-              z.write("examples/basic.py", "basic.py")
-          PY
-          ls -l dist extras
-
       - uses: actions/upload-artifact@v7
         with:
           name: dist
           path: dist
-          retention-days: 14
-
-      - uses: actions/upload-artifact@v7
-        with:
-          name: extras
-          path: extras
           retention-days: 14
 
   publish:
@@ -125,7 +104,8 @@ jobs:
     steps:
       - uses: actions/download-artifact@v8
         with:
-          path: artifacts
+          name: dist # by name: without one, a single artifact is put straight into `path`, not into artifacts/dist
+          path: artifacts/dist
 
       - name: Create GitHub release (draft)
         env:
@@ -136,4 +116,4 @@ jobs:
             --title "mpwasm ${{ github.ref_name }}" \
             --generate-notes \
             --draft \
-            artifacts/dist/* artifacts/extras/*
+            artifacts/dist/*

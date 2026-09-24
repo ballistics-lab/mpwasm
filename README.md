@@ -1,7 +1,7 @@
 # mpwasm
 
 MicroPython, from **CPython, PyPy and Pythonista**. It is MicroPython's own WebAssembly build, run inside
-whichever JavaScript engine is available: JavaScriptCore's `JSContext` in Pythonista on iOS,
+whichever JavaScript engine is available (through [wasmhost](https://github.com/ballistics-lab/py-wasmhost)): JavaScriptCore's `JSContext` in Pythonista on iOS,
 WebKitGTK's JavaScriptCore on Linux, or Node. No C extension, no per-platform build.
 
 ```python
@@ -125,9 +125,11 @@ without JIT (iOS runs JavaScriptCore without one), then combines coverage and up
 
 ## Pythonista
 
-Copy `src/mpwasm/` (with the downloaded `.mjs` / `.wasm` files) into Pythonista next to your script and
-`from mpwasm import MicroPython`. The package is plain Python 3.10 with no dependencies, and JSContext
-is picked automatically. Each release also carries `mpwasm-pythonista.zip`, that folder ready to copy.
+Install it with pip, in StaSh (Pythonista) or PythonIDE's pip: `pip install mpwasm` is the ordinary wheel, pure
+Python (`py3-none-any`) with the MicroPython `.mjs` / `.wasm` files inside. Then `from mpwasm import MicroPython`;
+JSContext is picked automatically. It uses [wasmhost](https://github.com/ballistics-lab/py-wasmhost) for the JavaScript
+hosts (installed with it), whose self-test (`import wasmhost; wasmhost.selftest()`)
+shows what the device can do. It has passed on Pythonista (StaSh, Python 3.10.4) and on PythonIDE (Python 3.14.7).
 
 The command line works there too, with the console as stdin: `python -m mpwasm` (or `mpwasm` in StaSh) with no
 script starts a REPL. Pythonista's console is interactive but is not a tty, so mpwasm recognises iOS and reads

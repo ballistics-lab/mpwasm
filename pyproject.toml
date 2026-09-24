@@ -12,7 +12,7 @@ readme = "README.md"
 authors = [{ name = "o-murphy", email = "thehelixpg@gmail.com" }]
 # 3.10 is what Pythonista runs.
 requires-python = ">=3.10"
-dependencies = []
+dependencies = ["wasmhost>=0.0.1b1"]
 
 [tool.setuptools]
 package-dir = { "" = "src" }
