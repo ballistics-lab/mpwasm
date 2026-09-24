@@ -2,7 +2,6 @@
 
 import io
 import os
-import pty
 import select
 import stat
 import subprocess
@@ -88,6 +87,106 @@ def test_parse_rejects(args: list[str]) -> None:
         _cli.parse_args(args)
 
 
+# ── what argparse gives ─────────────────────────────────────────────────────────────────────────────
+
+
+def test_options_take_equals_syntax() -> None:
+    o = _cli.parse_args(
+        ["--npm=1.28", "--mjs=a.mjs", "--wasm=b.wasm", "--tcp-port=0", "--tcp-host=0.0.0.0", "-Xheapsize=1M"]
+    )
+    assert (o.npm, o.mjs, o.wasm, o.tcp_port, o.tcp_host, o.heapsize) == (
+        "1.28",
+        "a.mjs",
+        "b.wasm",
+        0,
+        "0.0.0.0",
+        1024 * 1024,
+    )
+
+
+def test_short_flags_combine_and_count() -> None:
+    o = _cli.parse_args(["-ivv"])
+    assert (o.inspect, o.verbose) == (True, 2)
+
+
+@pytest.mark.parametrize(
+    ("args", "level"),
+    [
+        ([], None),
+        (["-O"], 1),
+        (["-OO"], 2),
+        (["-O0"], 0),
+        (["-O1"], 1),
+        (["-O2"], 2),
+        (["-O3"], 3),
+        (["-O", "s.py"], 1),
+    ],
+)
+def test_optimisation_levels(args: list[str], level: int | None) -> None:
+    assert _cli.parse_args(args).opt_level == level
+
+
+def test_o_does_not_swallow_the_script_name() -> None:
+    o = _cli.parse_args(["-O", "script.py"])
+    assert (o.opt_level, o.filename) == (1, "script.py")
+
+
+def test_repeated_x_options_accumulate() -> None:
+    o = _cli.parse_args(["-X", "compile-only", "-X", "heapsize=64K", "-X", "variant=ulab"])
+    assert (o.compile_only, o.heapsize, o.variant) == (True, 65536, "ulab")
+
+
+def test_abbreviations_are_not_accepted() -> None:
+    with pytest.raises(_cli.UsageError):
+        _cli.parse_args(["--np", "1.28"])  # would otherwise mean --npm
+
+
+def test_command_takes_the_rest_of_the_line_including_options() -> None:
+    o = _cli.parse_args(["-c", "print(1)", "--npm", "x", "-v", "-i"])
+    assert (o.command, o.argv, o.npm, o.verbose, o.inspect) == (
+        "print(1)",
+        ["-c", "--npm", "x", "-v", "-i"],
+        None,
+        0,
+        False,
+    )
+
+
+def test_options_after_the_script_belong_to_the_script() -> None:
+    o = _cli.parse_args(["-v", "s.py", "--npm", "x", "-i", "arg"])
+    assert (o.verbose, o.filename, o.argv, o.npm) == (1, "s.py", ["s.py", "--npm", "x", "-i", "arg"], None)
+
+
+@pytest.mark.parametrize("port", ["-1", "65536", "abc", "1.5"])
+def test_port_is_validated(port: str) -> None:
+    with pytest.raises(_cli.UsageError):
+        _cli.parse_args(["--tcp-port", port])
+
+
+def test_pty_and_tcp_port_exclude_each_other() -> None:
+    with pytest.raises(_cli.UsageError):
+        _cli.parse_args(["--pty", "--tcp-port", "0"])
+
+
+def test_only_the_first_of_c_and_m_counts_the_other_is_an_argument() -> None:
+    # like micropython: each takes the rest of the line, so there is nothing to conflict with
+    o = _cli.parse_args(["-m", "x", "-c", "1"])
+    assert (o.module, o.command, o.argv) == ("x", None, ["x", "-c", "1"])
+
+
+def test_help_text_is_generated_and_main_returns_zero(capsys: pytest.CaptureFixture[str]) -> None:
+    assert _cli.run(["-h"]) == 0
+    out = capsys.readouterr().out
+    for word in ("--npm", "--pty", "--tcp-port", "-X <implopt>", "heapsize=<n>[w][K|M]", "which MicroPython"):
+        assert word in out
+
+
+def test_main_reports_usage_errors_with_the_usage_line(capsys: pytest.CaptureFixture[str]) -> None:
+    assert _cli.run(["--tcp-port", "99999"]) == 2
+    err = capsys.readouterr().err
+    assert err.startswith("usage: mpwasm") and "mpwasm: error: argument --tcp-port: port out of range: 99999" in err
+
+
 # ── running ─────────────────────────────────────────────────────────────────────────────────────────
 
 
@@ -170,7 +269,11 @@ def test_version_and_help() -> None:
 
 def test_usage_errors_exit_2() -> None:
     r = cli("-Z")
-    assert r.returncode == 2 and r.stderr.startswith("mpwasm: unrecognised option")
+    assert (
+        r.returncode == 2
+        and r.stderr.startswith("usage: mpwasm")
+        and "mpwasm: error: unrecognized arguments: -Z" in r.stderr
+    )
     assert cli("--pty", "-c", "1").returncode == 2  # serving and running code are exclusive
     assert cli("--pty", "--tcp-port", "0").returncode == 2
 
@@ -191,6 +294,8 @@ def test_unknown_npm_version_is_a_clean_error() -> None:
 
 @pytest.mark.skipif(sys.platform == "win32", reason="needs a POSIX pty")
 def test_interactive_repl_on_a_tty() -> None:
+    import pty  # POSIX only: importing it at the top would break collecting these tests on Windows
+
     master, slave = pty.openpty()
     env = {**os.environ, "PYTHONPATH": SRC + os.pathsep + os.environ.get("PYTHONPATH", "")}
     proc = subprocess.Popen(
@@ -218,7 +323,16 @@ def test_interactive_repl_on_a_tty() -> None:
             read_until(expect)
             assert expect in buf, (line, buf)  # note the \r\n: no staircase on a raw terminal
         os.write(master, b"\x04")  # Ctrl-D at an empty prompt leaves, like the unix binary
-        assert proc.wait(timeout=20) == 0
+        # Keep reading the terminal while waiting, as a real terminal emulator does: on macOS a pty whose
+        # output nobody reads can hold the child back at exit.
+        end = time.time() + 20
+        while proc.poll() is None and time.time() < end:
+            if select.select([master], [], [], 0.1)[0]:
+                try:
+                    os.read(master, 4096)
+                except OSError:
+                    break
+        assert proc.wait(timeout=5) == 0
     finally:
         if proc.poll() is None:
             proc.kill()

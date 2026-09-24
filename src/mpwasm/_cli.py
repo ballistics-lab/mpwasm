@@ -1,6 +1,6 @@
 """Command line in the style of the unix `micropython` binary.
 
-    mpwasm [<opts>] [-X <implopt>] [-c <command> | -m <module> | <filename>]
+    mpwasm [<opts>] [-X <implopt>] [-c <command> | -m <module> | <filename>] [args ...]
 
 With no command, module or file it starts the REPL when stdin is a terminal (MicroPython's own REPL:
 its line editing, history, auto-indent and continuation lines), and otherwise runs stdin as a script.
@@ -13,6 +13,7 @@ when the script finishes rather than while it runs. The REPL is interactive as u
 
 from __future__ import annotations
 
+import argparse
 import contextlib
 import importlib.util
 import logging
@@ -23,7 +24,7 @@ import sys
 import sysconfig
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-from typing import Final
+from typing import Final, NoReturn
 
 from . import MicroPython, MicroPythonError, bundled_version, npm_versions
 from ._hosts import HOSTS
@@ -38,35 +39,58 @@ except ImportError:  # running from a source tree that has not been built
 PROG: Final = "mpwasm"
 DEFAULT_HEAP: Final = 2 * 1024 * 1024  # `micropython`'s default
 
-USAGE: Final = (
-    "usage: {prog} [<opts>] [-X <implopt>] [-c <command> | -m <module> | <filename>]\n"
-    "Options:\n"
-    "--version : show version information\n"
-    "-h : print this help message\n"
-    "-i : enable inspection via REPL after running command/module/file\n"
-    "-v : verbose (show the JavaScript host and its log); can be multiple\n"
-    "-O[N] : apply bytecode optimizations of level N\n"
-    "\n"
-    "Which MicroPython (default: the bundled build):\n"
-    "--npm <version|tag> : fetch this release from npm (downloaded once, cached), e.g. latest, 1.28, 1.29.0-6\n"
-    "--mjs <path>, --wasm <path> : use local loader / wasm files (each falls back to the build above)\n"
-    "--list-versions : list the releases available on npm\n"
-    "\n"
-    "Serve the REPL instead of running code (for mpremote and other serial clients):\n"
-    "--pty : on a pseudo-terminal (POSIX); prints the path for `mpremote connect <path>`\n"
-    "--tcp-port <n> [--tcp-host <h>] : on a TCP socket (`mpremote connect socket://host:port`); 0 = any free port\n"
-    "\n"
+# ── help texts (constants, as in rp2040py's CLI) ─────────────────────────────────────────────────────
+_USAGE: Final = "%(prog)s [<opts>] [-X <implopt>] [-c <command> | -m <module> | <filename>] [args ...]"
+_DESCRIPTION: Final = (
+    "MicroPython (its WebAssembly build) on the command line, in the style of the unix `micropython` binary. "
+    "With no command, module or file it starts a REPL (a script on stdin when stdin is piped)."
+)
+_INSPECT_HELP: Final = "enable inspection via REPL after running the command/module/file"
+_VERBOSE_HELP: Final = "verbose: show the JavaScript host (twice: also its log); can be repeated"
+_OPT_HELP: Final = "apply bytecode optimizations of level N (-O = -O1, -OO = -O2, -O0..-O3)"
+_VERSION_HELP: Final = "show version information and exit"
+_LIST_HELP: Final = "list the MicroPython releases available on npm and exit"
+_NPM_HELP: Final = (
+    "use this MicroPython release from npm instead of the bundled one: a version, a prefix (1.28 is the "
+    "newest 1.28.x) or a tag (latest); downloaded once and cached (default: the bundled build)"
+)
+_MJS_HELP: Final = "use this local loader (.mjs) instead of the build's own"
+_WASM_HELP: Final = "use this local .wasm instead of the build's own"
+_PTY_HELP: Final = "serve the REPL on a pseudo-terminal (POSIX) and print its path for `mpremote connect <path>`"
+_TCP_PORT_HELP: Final = "serve the REPL on this TCP port (0 = any free one) for `mpremote connect socket://host:port`"
+_TCP_HOST_HELP: Final = "address to listen on with --tcp-port (default: %(default)s)"
+_COMMAND_HELP: Final = "run this command, then exit; everything after it becomes sys.argv[1:]"
+_MODULE_HELP: Final = (
+    "run this module from the current directory (or $MICROPYPATH) as __main__; the rest is sys.argv[1:]"
+)
+_REST_HELP: Final = "a script file to run, then exit; everything after it becomes sys.argv[1:]"
+_IMPL_HELP: Final = "implementation specific option, see below; can be repeated"
+_EPILOG: Final = (
     "Implementation specific options (-X):\n"
-    "  compile-only                 -- parse and compile only\n"
-    "  heapsize=<n>[w][K|M]         -- set the heap size for the GC (default {heap})\n"
-    "  host={{{hosts}}}\n"
-    "                               -- JavaScript host to run on (default: first that starts)\n"
-    "  variant=<name>               -- the build's variant, e.g. ulab (numpy-like arrays)\n"
+    "  compile-only            parse and compile only\n"
+    "  heapsize=<n>[w][K|M]    set the heap size for the GC (default {heap})\n"
+    "  host={hosts}\n"
+    "                          JavaScript host to run on (default: the first that starts)\n"
+    "  variant=<name>          the build's variant, e.g. ulab (numpy-like arrays)\n"
+    "\n"
+    "Like micropython, options are read up to the first command/module/file; whatever follows belongs to the\n"
+    "script (so `mpwasm script.py --npm x` passes --npm to the script)."
 )
 
 
 class UsageError(Exception):
-    """A bad command line: reported as `prog: message` with status 2."""
+    """A bad command line: reported as `prog: message` with status 2 (`show_usage`: preceded by the usage line)."""
+
+    def __init__(self, message: str, *, show_usage: bool = False) -> None:
+        super().__init__(message)
+        self.show_usage = show_usage
+
+
+class _Parser(argparse.ArgumentParser):
+    """argparse that raises instead of exiting, so `main()` can return the status (and be called from an IDE)."""
+
+    def error(self, message: str) -> NoReturn:
+        raise UsageError(message, show_usage=True)
 
 
 @dataclass
@@ -118,69 +142,86 @@ def _impl_option(opts: Options, text: str) -> None:
         raise UsageError(f"unknown implementation option: -X {text}")
 
 
+def _port(text: str) -> int:
+    try:
+        port = int(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"expected a port number, got {text!r}") from None
+    if not 0 <= port <= 65535:
+        raise argparse.ArgumentTypeError(f"port out of range: {port}")
+    return port
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = _Parser(
+        prog=PROG,
+        usage=_USAGE,
+        description=_DESCRIPTION,
+        epilog=_EPILOG.format(heap=DEFAULT_HEAP, hosts="{" + "|".join(HOSTS) + "}"),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        add_help=False,  # `-h` is handled by main(), so it returns a status instead of exiting
+        allow_abbrev=False,  # `--np` must not silently mean `--npm`
+    )
+    parser.add_argument("-h", "--help", action="store_true", help="show this help message and exit")
+    parser.add_argument("--version", action="store_true", help=_VERSION_HELP)
+    parser.add_argument("-i", dest="inspect", action="store_true", help=_INSPECT_HELP)
+    parser.add_argument("-v", dest="verbose", action="count", default=0, help=_VERBOSE_HELP)
+    parser.add_argument("-O", dest="opt_level", action="count", default=None, help=_OPT_HELP)
+    for level in range(4):  # `-O2` (digits attached) is its own option: -O takes no argument
+        parser.add_argument(f"-O{level}", dest="opt_level", action="store_const", const=level, help=argparse.SUPPRESS)
+    parser.add_argument("-X", dest="impl", action="append", metavar="<implopt>", help=_IMPL_HELP)
+
+    which = parser.add_argument_group("which MicroPython")
+    which.add_argument("--npm", metavar="<version|tag>", help=_NPM_HELP)
+    which.add_argument("--mjs", metavar="<path>", help=_MJS_HELP)
+    which.add_argument("--wasm", metavar="<path>", help=_WASM_HELP)
+    which.add_argument("--list-versions", action="store_true", help=_LIST_HELP)
+
+    serve = parser.add_argument_group("serve the REPL to mpremote and other serial clients")
+    transport = serve.add_mutually_exclusive_group()
+    transport.add_argument("--pty", action="store_true", help=_PTY_HELP)
+    transport.add_argument("--tcp-port", type=_port, metavar="<port>", default=None, help=_TCP_PORT_HELP)
+    serve.add_argument("--tcp-host", default="127.0.0.1", metavar="<host>", help=_TCP_HOST_HELP)
+
+    source = parser.add_argument_group("what to run")
+    what = source.add_mutually_exclusive_group()
+    # REMAINDER: -c/-m take the rest of the line, so a script's own options are never read as ours.
+    what.add_argument("-c", dest="command", nargs=argparse.REMAINDER, metavar="<command>", help=_COMMAND_HELP)
+    what.add_argument("-m", dest="module", nargs=argparse.REMAINDER, metavar="<module>", help=_MODULE_HELP)
+    parser.add_argument("rest", nargs=argparse.REMAINDER, metavar="<filename> [args ...]", help=_REST_HELP)
+    return parser
+
+
 def parse_args(args: Sequence[str]) -> Options:
-    """Options up to the first non-option; everything after -c/-m/<filename> is the script's own argv."""
-    opts = Options()
-    i = 0
-    while i < len(args):
-        a = args[i]
-        if a in ("-h", "--help"):
-            opts.show_help = True
-            return opts
-        if a == "--version":
-            opts.show_version = True
-            return opts
-        if a == "--list-versions":
-            opts.list_versions = True
-            return opts
-        if a == "--pty":
-            opts.pty = True
-        elif a in ("--npm", "--mjs", "--wasm", "--tcp-port", "--tcp-host"):
-            i += 1
-            if i >= len(args):
-                raise UsageError(f"{a} requires an argument")
-            value = args[i]
-            if a == "--npm":
-                opts.npm = value
-            elif a == "--mjs":
-                opts.mjs = value
-            elif a == "--wasm":
-                opts.wasm = value
-            elif a == "--tcp-host":
-                opts.tcp_host = value
-            else:
-                if not value.isdigit():
-                    raise UsageError(f"--tcp-port expects a port number, got {value!r}")
-                opts.tcp_port = int(value)
-        elif a == "-i":
-            opts.inspect = True
-        elif a == "-v":
-            opts.verbose += 1
-        elif re.fullmatch(r"-O+|-O\d+", a):
-            opts.opt_level = int(a[2:]) if a[2:].isdigit() else len(a) - 1
-        elif a == "-X":
-            i += 1
-            if i >= len(args):
-                raise UsageError("-X requires an argument")
-            _impl_option(opts, args[i])
-        elif a in ("-c", "-m"):
-            i += 1
-            if i >= len(args):
-                raise UsageError(f"{a} requires an argument")
-            if a == "-c":
-                opts.command = args[i]
-                opts.argv = ["-c", *args[i + 1 :]]
-            else:
-                opts.module = args[i]
-                opts.argv = [args[i], *args[i + 1 :]]
-            return opts
-        elif a.startswith("-") and a != "-":
-            raise UsageError(f"unrecognised option: {a}")
-        else:
-            opts.filename = a
-            opts.argv = list(args[i:])
-            return opts
-        i += 1
+    """Options up to the first command/module/file (see the epilog of --help); the rest is the script's own argv."""
+    ns = build_parser().parse_args(list(args))
+    opts = Options(
+        inspect=ns.inspect,
+        verbose=ns.verbose,
+        opt_level=ns.opt_level,
+        npm=ns.npm,
+        mjs=ns.mjs,
+        wasm=ns.wasm,
+        pty=ns.pty,
+        tcp_port=ns.tcp_port,
+        tcp_host=ns.tcp_host,
+        list_versions=ns.list_versions,
+        show_help=ns.help,
+        show_version=ns.version,
+    )
+    impl: list[str] = ns.impl or []
+    for text in impl:
+        _impl_option(opts, text)
+    if ns.command is not None:
+        if not ns.command:
+            raise UsageError("argument -c: expected an argument", show_usage=True)
+        opts.command, opts.argv = ns.command[0], ["-c", *ns.command[1:]]
+    elif ns.module is not None:
+        if not ns.module:
+            raise UsageError("argument -m: expected an argument", show_usage=True)
+        opts.module, opts.argv = ns.module[0], list(ns.module)
+    elif ns.rest:
+        opts.filename, opts.argv = ns.rest[0], list(ns.rest)
     return opts
 
 
@@ -394,7 +435,9 @@ def tty_repl(mp: MicroPython) -> int:
                 _write(sys.stdout, "\r\n")
                 return 0
     finally:
-        termios.tcsetattr(fd, termios.TCSADRAIN, saved)
+        # TCSANOW, not TCSADRAIN: DRAIN waits until the terminal has taken all queued output, so a terminal
+        # that has stopped reading (or a pty nobody reads, as on macOS) would keep us from ever exiting.
+        termios.tcsetattr(fd, termios.TCSANOW, saved)
 
 
 def repl(mp: MicroPython) -> int:
@@ -422,12 +465,21 @@ def _read_source(opts: Options) -> tuple[str, str] | None:
     return None
 
 
-def main(argv: Sequence[str] | None = None) -> int:
+def main(argv: Sequence[str] | None = None) -> None:
+    """The console entry point (`mpwasm`, `python -m mpwasm`): runs the command line and exits with its status,
+    as rp2040py's `main()` does. Use `run()` to get the status back instead."""
+    sys.exit(run(argv))
+
+
+def run(argv: Sequence[str] | None = None) -> int:
+    """Run the command line and return its exit status (0, `sys.exit(n)` -> n, an error -> 1 or 2)."""
     args = list(sys.argv[1:] if argv is None else argv)
     try:
         return _main(args)
     except UsageError as exc:
-        _write(sys.stderr, f"{PROG}: {exc}\n")
+        if exc.show_usage:
+            _write(sys.stderr, build_parser().format_usage())
+        _write(sys.stderr, f"{PROG}: {'error: ' if exc.show_usage else ''}{exc}\n")
         return 2
     except (MicroPythonError, RuntimeError, ValueError, OSError) as exc:  # a build that can't load, no network, ...
         _write(sys.stderr, f"{PROG}: {exc}\n")
@@ -437,7 +489,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 def _main(args: list[str]) -> int:
     opts = parse_args(args)
     if opts.show_help:
-        _write(sys.stdout, USAGE.format(prog=PROG, heap=DEFAULT_HEAP, hosts="|".join(HOSTS)))
+        _write(sys.stdout, build_parser().format_help())
         return 0
     if opts.verbose:
         logging.basicConfig(level=logging.INFO, format=f"{PROG}: %(message)s")
@@ -489,4 +541,4 @@ def _main(args: list[str]) -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    main()

@@ -57,6 +57,6 @@ if mp is not None:
     step("REPL-style expression", lambda: loaded.repl("6 * 7"))
     step("run_async", lambda: loaded.run_async("import asyncio\nawait asyncio.sleep(0.1)\nprint('async ok')"))
     step("JS log (empty is good)", loaded.js_log)
-step("command line: -c", lambda: _cli.main(["-c", "print('from the CLI')"]))
+step("command line: -c", lambda: _cli.run(["-c", "print('from the CLI')"]))
 print("\n--- command line: REPL (type  exit()  to leave)")
-print("returned", _cli.main([]))
+print("returned", _cli.run([]))

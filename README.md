@@ -129,8 +129,8 @@ Copy `src/mpwasm/` (with the downloaded `.mjs` / `.wasm` files) into Pythonista 
 `from mpwasm import MicroPython`. The package is plain Python 3.10 with no dependencies, and JSContext
 is picked automatically. Each release also carries `mpwasm-pythonista.zip`, that folder ready to copy.
 
-To get the command line, open `mpwasm/__main__.py` and press Run: with no script it starts a REPL on the
-console (`>>> ` prompts, `... ` for blocks). Pythonista's console is interactive but is not a tty, so mpwasm
-recognises iOS and reads it line by line with `input()`; `exit()`, `sys.exit(n)` or end of input leave it, as
-iOS keyboards have no Ctrl-D. Give options (`-c`, `--npm`, a file) through Pythonista's script-arguments
-prompt, or call `mpwasm._cli.main(["-c", "print(1)"])`. `--tcp-port` also works there, for `rp2040py mpremote`.
+The command line works there too, with the console as stdin: `python -m mpwasm` (or `mpwasm` in StaSh) with no
+script starts a REPL. Pythonista's console is interactive but is not a tty, so mpwasm recognises iOS and reads
+it line by line with `input()`; `exit()`, `sys.exit(n)` or end of input leave it, as iOS keyboards have no Ctrl-D.
+From the console you can also call `mpwasm._cli.run(["-c", "print(1)"])`, which returns the exit status instead
+of exiting (`main()` exits, like rp2040py's). `--tcp-port` works there as well, for `rp2040py mpremote`.
