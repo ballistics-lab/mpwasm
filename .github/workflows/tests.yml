@@ -47,7 +47,7 @@ jobs:
           fetch-depth: 0 # setuptools_scm needs tags for the package version
 
       - name: Install uv
-        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7
+        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884
         with:
           python-version: ${{ matrix.python-version }}
 
@@ -86,7 +86,7 @@ jobs:
           sudo apt-get install -y -q gir1.2-javascriptcoregtk-4.1 python3-gi
 
       - name: Install uv
-        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7
+        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884
 
       # python3-gi is built for the distribution's own Python, so use that interpreter with its
       # site-packages visible.
@@ -133,7 +133,7 @@ jobs:
       - uses: actions/checkout@v7
 
       - name: Install uv
-        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7
+        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884
 
       - name: Download coverage data
         uses: actions/download-artifact@v8
